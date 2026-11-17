@@ -3,9 +3,9 @@ import { test, expect } from "@playwright/test";
 test("V1 note, graph, edge, search, conflicts and history workflow", async ({ page }) => {
  const errors: string[] = [];
  page.on("pageerror", error => errors.push(error.message));
- await page.goto("/");
+ await page.goto("/#notes");
  const create = async (title: string, body: string) => {
-  await page.getByRole("button", { name: "＋ New note" }).click();
+  await page.getByRole("button", { name: "New note", exact: true }).click();
   await page.getByLabel("Note title", { exact: true }).fill(title);
   await page.getByLabel("Markdown content").fill(body);
   await page.getByRole("button", { name: "Create", exact: true }).click();
@@ -83,7 +83,7 @@ test("V1 note, graph, edge, search, conflicts and history workflow", async ({ pa
 
 test("Activity dashboard controls stay local, persist pause, and validate privacy settings", async ({ page }) => {
  await page.goto("/");
- await page.getByRole("button", {name:/^Activity [●○]$/}).click();
+ await page.getByRole("tab", {name:"Trends"}).click();
  await expect(page.getByRole("region",{name:"Activity dashboard"})).toBeVisible();
  await expect(page.getByRole("heading",{name:"What you use"})).toBeVisible();
  await expect(page.getByText("Recording stopped",{exact:false})).toBeVisible();
@@ -96,10 +96,10 @@ test("Activity dashboard controls stay local, persist pause, and validate privac
  await page.getByLabel("Chart granularity").selectOption("week");
  await expect(page.locator(".comparison-heading p")).toContainText("Weekly totals");
  await expect(page.locator(".comparison")).toContainText("Weeks at the range boundaries may be partial");
- await page.getByRole("button",{name:"Active vs idle"}).click();
- await expect(page.getByRole("img",{name:"Active and idle time by period"})).toBeVisible();
- await page.getByRole("button",{name:"Context switches"}).click();
- await expect(page.getByRole("img",{name:"Context switches by period"})).toBeVisible();
+ await page.getByRole("button",{name:"Active vs passive"}).click();
+ await expect(page.getByRole("img",{name:"Active and passive time by period"})).toBeVisible();
+ await page.getByRole("button",{name:"App switches"}).click();
+ await expect(page.getByRole("img",{name:"App switches by period"})).toBeVisible();
  await page.getByLabel("Activity time range").selectOption("30");
  await expect(page.locator(".comparison-heading p")).toContainText("Weekly totals");
  await page.getByText("Privacy, retention & browser setup",{exact:true}).click();
@@ -112,7 +112,8 @@ test("Activity dashboard controls stay local, persist pause, and validate privac
  expect(status.config.excluded_domains).toEqual(["private.example"]);
  await page.getByRole("button",{name:"Show browser pairing token"}).click();
  await expect(page.getByLabel("Browser pairing token",{exact:true})).toHaveValue(/^[a-f0-9]{64}$/);
- await page.getByRole("button",{name:"Close activity"}).click();
  await page.reload();
- await expect(page.getByText("○ Activity stopped",{exact:true})).toBeVisible();
+ // Pausing persists across reloads and shows on the recording switch.
+ await expect(page.getByRole("switch",{name:"Record activity"})).toHaveAttribute("aria-checked","false");
+ await expect(page.getByRole("tab",{name:"Trends"})).toHaveAttribute("aria-selected","true");
 });

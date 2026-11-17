@@ -65,3 +65,35 @@ func TestGetSeriesWeeklyTopAppsAndOtherBucket(t *testing.T) {
 		t.Fatal("invalid granularity should be rejected")
 	}
 }
+
+func TestGetSeriesUntilClipsEveryDayToTheSameClockTime(t *testing.T) {
+	c, db := setup(t)
+	now := time.Date(2026, time.October, 10, 10, 0, 0, 0, time.UTC)
+	// Yesterday: 9:00-11:00 straddles the 10:00 cut; only the first hour counts.
+	insertSeriesSession(t, c, "Editor", "editor", "", time.Date(2026, 10, 9, 9, 0, 0, 0, time.UTC), time.Date(2026, 10, 9, 11, 0, 0, 0, time.UTC), 7200, 3600)
+	// Yesterday evening is entirely after the cut.
+	insertSeriesSession(t, c, "Video", "video", "", time.Date(2026, 10, 9, 20, 0, 0, 0, time.UTC), time.Date(2026, 10, 9, 21, 0, 0, 0, time.UTC), 3600, 600)
+
+	clipped, err := GetSeriesUntil(db, 2, "day", now, 10*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := clipped.Buckets[0].TotalSeconds; got != 3600 {
+		t.Fatalf("yesterday clipped to 10:00 should hold one hour, got %v", got)
+	}
+	if got := clipped.Buckets[0].ActiveSeconds; got != 1800 {
+		t.Fatalf("active time should scale with the clipped share, got %v", got)
+	}
+	for _, app := range clipped.Buckets[0].Apps {
+		if app.AppID == "video" {
+			t.Fatalf("evening activity leaked past the cut: %+v", clipped.Buckets[0].Apps)
+		}
+	}
+	full, err := GetSeries(db, 2, "day", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := full.Buckets[0].TotalSeconds; got != 10800 {
+		t.Fatalf("unclipped day should hold all three hours, got %v", got)
+	}
+}

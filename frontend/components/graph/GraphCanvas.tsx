@@ -3,6 +3,8 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { Edge, Note } from "@/lib/types";
 import { api } from "@/lib/api";
+import { Icon } from "@/components/ui/Icon";
+import { usePens } from "@/lib/pens";
 
 export interface GraphHandle { focusNode: (id: number) => void; refresh: () => Promise<void>; fit: () => void }
 interface SimNode extends Omit<Note, "x" | "y"> { x: number; y: number; vx: number; vy: number; fx: number | null; fy: number | null }
@@ -19,6 +21,8 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas({
  const active = useRef(false);
  const sequence = useRef(0);
  const settle = useRef(0);
+ // Once the person pans, zooms, drags or focuses, the view is theirs: no more auto-fit.
+ const touched = useRef(false);
  const pending = useRef<number | null>(null);
  const hover = useRef<number | null>(null);
  const signature = useRef("");
@@ -33,7 +37,13 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas({
   if (f.scope==="connected") return n.type!=="note" || edges.current.some(e=>e.edge.source==="activity" && (e.a.id===n.id||e.b.id===n.id));
   return true;
  };
- const edgeColor=(e:Edge)=>e.source==="explicit"?"#6ea8fe":e.source!=="activity"?"#8b93a7":e.relationship_type==="context switch"?"#c179f2":e.relationship_type==="activity concept"?"#e6aa45":"#47b881";
+ const palette=useRef<Record<string,string>>({});
+ const edgeColor=(e:Edge)=>{const c=palette.current;return e.source==="explicit"?c["edge-explicit"]:e.source!=="activity"?c["edge-inferred"]:e.relationship_type==="context switch"?c["edge-switch"]:e.relationship_type==="activity concept"?c["edge-concept"]:c["edge-usage"];};
+ // Notes are open ink circles; apps and websites wear their own highlighter pen
+ // (the same pen as on Today and Trends); pages, windows and the rest are grey.
+ const pens=usePens(); const pensRef=useRef(pens); pensRef.current=pens;
+ const nodeColor=(n:Note)=>{const c=palette.current;if(n.type==="note")return c["paper-raised"];if(n.type==="app"||n.type==="domain")return c[pensRef.current.token(n.title)]??c["hl-grey"];return c["hl-grey"];};
+ const dotFill=(n:Note)=>n.type==="note"?"var(--paper-raised)":n.type==="app"||n.type==="domain"?pens.css(n.title):"var(--hl-grey)";
  const [list, setList] = useState<Note[]>([]);
  const [edgeList, setEdgeList] = useState<Edge[]>([]);
  const [loading, setLoading] = useState(true);
@@ -43,15 +53,26 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas({
  const drag = useRef<{ id: number; node: SimNode | null; edge: Edge | null; startX: number; startY: number; lastX: number; lastY: number; moved: boolean } | null>(null);
  const visible = (e: Edge) => (filters.current.showActivity || e.source!=="activity") && visibleNode(nodes.current.get(e.source_id)!) && visibleNode(nodes.current.get(e.target_id)!) && (props.current.showWeak || e.source === "explicit" || e.strength >= props.current.threshold);
  const fit = useCallback(() => {
-  const wrap = wrapRef.current; const all = [...nodes.current.values()].filter(visibleNode); if (!wrap || !all.length) return;
-  const minX = Math.min(...all.map(n => n.x)) - 70, maxX = Math.max(...all.map(n => n.x)) + 70;
+  const wrap = wrapRef.current; const all = [...nodes.current.values()].filter(visibleNode); if (!wrap || !all.length || !wrap.clientWidth) return;
+  // Generous side margins so centred labels are never clipped at the edges.
+  const minX = Math.min(...all.map(n => n.x)) - 120, maxX = Math.max(...all.map(n => n.x)) + 120;
   const minY = Math.min(...all.map(n => n.y)) - 70, maxY = Math.max(...all.map(n => n.y)) + 70;
-  const scale = Math.min(1.5, Math.max(0.1, Math.min(wrap.clientWidth / (maxX - minX), wrap.clientHeight / (maxY - minY)) * 0.9));
-  view.current = { scale, tx: wrap.clientWidth / 2 - (minX + maxX) / 2 * scale, ty: wrap.clientHeight / 2 - (minY + maxY) / 2 * scale };
+  const raw = Math.min(1.5, Math.max(0.1, Math.min(wrap.clientWidth / (maxX - minX), wrap.clientHeight / (maxY - minY)) * 0.9));
+  // On a phone, never shrink below a zoom where dots and labels stay readable.
+  // If the whole graph can't fit at that zoom, centre on the notes and let people pan.
+  const floor = wrap.clientWidth < 600 ? 0.62 : 0.1;
+  const scale = Math.max(raw, floor);
+  let cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  if (scale > raw) {
+   const notes = all.filter(n => n.type === "note"), focusSet = notes.length ? notes : all;
+   cx = focusSet.reduce((s, n) => s + n.x, 0) / focusSet.length; cy = focusSet.reduce((s, n) => s + n.y, 0) / focusSet.length;
+  }
+  view.current = { scale, tx: wrap.clientWidth / 2 - cx * scale, ty: wrap.clientHeight / 2 - cy * scale };
  }, []);
  const focus = useCallback((id: number) => {
   const n = nodes.current.get(id), wrap = wrapRef.current;
-  if (!n || !wrap) { pending.current = id; return; }
+  if (!n || !wrap || !wrap.clientWidth) { pending.current = id; return; }
+  touched.current = true;
   view.current = { scale: 1.2, tx: wrap.clientWidth / 2 - n.x * 1.2, ty: wrap.clientHeight / 2 - n.y * 1.2 };
   pending.current = null;
  }, []);
@@ -82,16 +103,31 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas({
   return () => { active.current = false; sequence.current++; clearInterval(timer); };
  }, [load]);
  useEffect(() => { settle.current = 120; }, [showWeak, threshold, showActivity, showBrowser, scope]);
+ useEffect(() => {
+  // The canvas cannot use CSS variables directly, so snapshot the planner tokens
+  // and refresh them whenever the colour scheme flips.
+  const keys = ["node-note","node-app","node-domain","node-page","node-window","node-outline","node-selected","edge-explicit","edge-inferred","edge-usage","edge-concept","edge-switch","canvas-label","canvas-halo","canvas-grid","paper","paper-raised","ink","ink-2","rule","hairline","hl-blue","hl-pink","hl-green","hl-orange","hl-grey"];
+  const read = () => {
+   const css = getComputedStyle(document.documentElement), next: Record<string,string> = {};
+   for (const k of keys) next[k] = css.getPropertyValue(`--${k}`).trim();
+   next["font"] = css.getPropertyValue("--font").trim() || "system-ui, sans-serif";
+   palette.current = next;
+  };
+  read(); const mq = window.matchMedia("(prefers-color-scheme: dark)"); mq.addEventListener("change", read);
+  return () => mq.removeEventListener("change", read);
+ }, []);
 
  useEffect(() => {
   const wrap = wrapRef.current; if (!wrap) return;
   const observer = new ResizeObserver(entries => {
    const { width, height } = entries[0].contentRect;
    const old = (wrap as HTMLDivElement & { previousSize?: { w: number; h: number } }).previousSize;
-   if (old) { view.current.tx += (width - old.w) / 2; view.current.ty += (height - old.h) / 2; }
+   // The Notes tab mounts hidden; fit the first time the canvas gets a real size.
+   if (old && old.w > 0 && old.h > 0) { view.current.tx += (width - old.w) / 2; view.current.ty += (height - old.h) / 2; }
+   else if (width > 0 && height > 0) { if (pending.current != null) focus(pending.current); else fit(); }
    (wrap as HTMLDivElement & { previousSize?: { w: number; h: number } }).previousSize = { w: width, h: height };
   }); observer.observe(wrap); return () => observer.disconnect();
- }, []);
+ }, [fit, focus]);
 
  useEffect(() => {
   let raf = 0;
@@ -101,6 +137,8 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas({
    if (document.hidden) { raf=requestAnimationFrame(loop); return; }
    const all = [...nodes.current.values()].filter(visibleNode);
    if (settle.current > 0) {
+    // Re-fit once when the first layout settles, so labels aren't left off-screen.
+    if (settle.current === 1 && !touched.current) { fit(); touched.current = true; }
     settle.current--;
     // Spatial buckets bound repulsion for large vaults instead of all-pairs.
     const buckets = new Map<string, SimNode[]>(), cell = 240;
@@ -127,20 +165,73 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas({
     }
    }
    const dpr=window.devicePixelRatio||1,w=wrap.clientWidth,h=wrap.clientHeight;
+   if(!w||!h){raf=requestAnimationFrame(loop);return;}
    if(canvas.width!==Math.round(w*dpr)||canvas.height!==Math.round(h*dpr)){canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);}
    const ctx=canvas.getContext("2d");if(!ctx){raf=requestAnimationFrame(loop);return;}
-   ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);ctx.save();ctx.translate(view.current.tx,view.current.ty);ctx.scale(view.current.scale,view.current.scale);
-   for(const {edge,a,b} of edges.current){
-    if(!visible(edge))continue;const selected=props.current.selectedEdgeId===edge.id||props.current.selectedId===a.id||props.current.selectedId===b.id;
-    ctx.strokeStyle=selected?"#8db9ff":edgeColor(edge);ctx.lineWidth=selected?2.5:1;
-    ctx.setLineDash(edge.source==="explicit"?[]:[4,4]);ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();ctx.setLineDash([]);
-    if(selected){ctx.font="11px system-ui";ctx.fillStyle="#dde3ee";ctx.textAlign="center";ctx.fillText(`${Math.round(edge.strength)}/150`,(a.x+b.x)/2,(a.y+b.y)/2-5);}
+   const c=palette.current,v=view.current,sel=props.current.selectedId,selEdge=props.current.selectedEdgeId,hov=hover.current;
+   ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+   // Planner grid that pans and zooms with the view: fine cells, a stronger rule every fourth.
+   const step=24*v.scale;
+   if(step>=7){ctx.lineWidth=1;const ox=((v.tx%step)+step)%step,oy=((v.ty%step)+step)%step;
+    ctx.strokeStyle=c["canvas-grid"];ctx.beginPath();
+    for(let x=ox;x<w;x+=step){ctx.moveTo(Math.round(x)+.5,0);ctx.lineTo(Math.round(x)+.5,h);}
+    for(let y=oy;y<h;y+=step){ctx.moveTo(0,Math.round(y)+.5);ctx.lineTo(w,Math.round(y)+.5);}
+    ctx.stroke();}
+   // Focus set: the selected (or hovered) node, its neighbours, or the selected edge's endpoints.
+   const focusId=sel??hov,focusSet=new Set<number>();
+   const shown=edges.current.filter(e=>visible(e.edge));
+   if(focusId!=null){focusSet.add(focusId);for(const {a,b} of shown){if(a.id===focusId)focusSet.add(b.id);else if(b.id===focusId)focusSet.add(a.id);}}
+   else if(selEdge!=null){const se=shown.find(e=>e.edge.id===selEdge);if(se){focusSet.add(se.a.id);focusSet.add(se.b.id);}}
+   const focused=focusSet.size>0;
+   ctx.save();ctx.translate(v.tx,v.ty);ctx.scale(v.scale,v.scale);
+   const px=1/v.scale; // one screen pixel in world units
+   ctx.lineCap="round";
+   for(const {edge,a,b} of shown){
+    const hot=selEdge===edge.id||(focusId!=null&&(a.id===focusId||b.id===focusId)),dim=focused&&!hot;
+    if(edge.source==="activity"){
+     // Activity connections are highlighter swipes: wide, translucent, no dash.
+     ctx.globalAlpha=dim?0.1:hot?0.75:0.42;ctx.strokeStyle=edgeColor(edge);ctx.lineWidth=(hot?9:6)*Math.max(px,0.7);ctx.setLineDash([]);
+    }else{
+     ctx.globalAlpha=dim?0.15:hot?1:edge.source==="explicit"?0.85:0.6;ctx.strokeStyle=edgeColor(edge);
+     ctx.lineWidth=(hot?2.4:edge.source==="explicit"?1.6:1.2)*Math.max(px,0.6);
+     ctx.setLineDash(edge.source==="explicit"?[]:[5*Math.max(px,0.6),5*Math.max(px,0.6)]);
+    }
+    if(selEdge===edge.id){ctx.strokeStyle=c["rule"];ctx.globalAlpha=1;}
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();ctx.setLineDash([]);
    }
-   for(const n of all){const selected=props.current.selectedId===n.id;
-    ctx.beginPath();ctx.arc(n.x,n.y,radius(n),0,Math.PI*2);ctx.fillStyle=selected?"#8db9ff":hover.current===n.id?"#6ea8fe":n.type==="app"?"#c179f2":n.type==="domain"?"#26a69a":n.type==="page"?"#e6aa45":n.type==="window"?"#8c79bd":"#3b5bdb";ctx.fill();
-    if(selected||n.fx!=null){ctx.strokeStyle=selected?"#fff":"#51cf66";ctx.lineWidth=2;ctx.stroke();}
-    ctx.fillStyle="#dde3ee";ctx.font="11px system-ui";ctx.textAlign="center";ctx.fillText(n.title,n.x,n.y+radius(n)+15);
+   ctx.globalAlpha=1;
+   // Strength tags on highlighted edges, written in ink on a paper slip.
+   if(sel!=null||selEdge!=null){
+    ctx.font=`650 ${11.5*px}px ${c["font"]}`;ctx.textAlign="center";ctx.textBaseline="middle";
+    for(const {edge,a,b} of shown){
+     if(!(selEdge===edge.id||sel===a.id||sel===b.id))continue;
+     const label=`${Math.round(edge.strength)}`,mx=(a.x+b.x)/2,my=(a.y+b.y)/2,tw=ctx.measureText(label).width+12*px,th=18*px;
+     ctx.fillStyle=c["paper-raised"];ctx.strokeStyle=selEdge===edge.id?c["rule"]:c["ink"];ctx.lineWidth=1.25*px;
+     ctx.beginPath();ctx.roundRect(mx-tw/2,my-th/2,tw,th,4*px);ctx.fill();ctx.stroke();
+     ctx.fillStyle=c["ink"];ctx.fillText(label,mx,my+0.5*px);
+    }
    }
+   const order=[...all].sort((p,q)=>(focusSet.has(p.id)?1:0)-(focusSet.has(q.id)?1:0)||(p.id===sel?1:0)-(q.id===sel?1:0));
+   for(const n of order){
+    const selected=sel===n.id,isHover=hov===n.id,inFocus=!focused||focusSet.has(n.id),r=radius(n),col=nodeColor(n);
+    ctx.globalAlpha=inFocus?1:0.25;
+    // A highlighter halo marks what you are pointing at.
+    if(selected||isHover){ctx.beginPath();ctx.arc(n.x,n.y,r+8*px,0,Math.PI*2);ctx.fillStyle=col;ctx.globalAlpha=0.35;ctx.fill();ctx.globalAlpha=1;}
+    ctx.beginPath();ctx.arc(n.x,n.y,r,0,Math.PI*2);ctx.fillStyle=col;ctx.fill();
+    ctx.lineWidth=(n.type==="note"?2.2:1.6)*px;ctx.strokeStyle=c["node-outline"];ctx.stroke();
+    // Pinned: a second ink ring drawn just outside, like a circled entry.
+    if(n.fx!=null){ctx.beginPath();ctx.arc(n.x,n.y,r+3.5*px,0,Math.PI*2);ctx.strokeStyle=c["node-outline"];ctx.lineWidth=1.25*px;ctx.stroke();}
+    if(selected){ctx.beginPath();ctx.arc(n.x,n.y,r+(n.fx!=null?7:4)*px,0,Math.PI*2);ctx.strokeStyle=c["node-selected"];ctx.lineWidth=2.6*px;ctx.stroke();}
+    // Labels stay a constant on-screen size; minor ones hide when zoomed far out.
+    const showLabel=selected||isHover||(focused&&focusSet.has(n.id))||v.scale>0.55||n.importance>0.5;
+    if(showLabel){
+     const fs=(selected||isHover?13:12)*px;ctx.font=`${selected||isHover?650:550} ${fs}px ${c["font"]}`;ctx.textAlign="center";ctx.textBaseline="top";
+     const ly=n.y+r+6*px;ctx.lineJoin="round";ctx.lineWidth=5*px;ctx.strokeStyle=c["canvas-halo"];ctx.strokeText(n.title,n.x,ly);
+     ctx.fillStyle=c["canvas-label"];ctx.fillText(n.title,n.x,ly);
+    }
+   }
+   ctx.globalAlpha=1;
+   canvas.style.cursor=drag.current?.moved?"grabbing":hov!=null?"pointer":"grab";
    ctx.restore();raf=requestAnimationFrame(loop);
   };raf=requestAnimationFrame(loop);return()=>cancelAnimationFrame(raf);
  }, []);
@@ -157,29 +248,81 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas({
   if(current.node&&current.moved){const n=current.node;try{await api.setPosition(n.id,n.fx,n.fy);}catch(err){props.current.onStatus(`Position save failed: ${String(err)}`);load().catch(()=>{});}}
   else if(!current.moved){if(current.node)selectNode(current.node.id);else{props.current.onSelectEdge(current.edge);}}
  };
+ const zoomBy=(factor:number)=>{const wrap=wrapRef.current;if(!wrap)return;touched.current=true;const v=view.current,s=Math.min(4,Math.max(0.1,v.scale*factor)),mx=wrap.clientWidth/2,my=wrap.clientHeight/2;v.tx=mx-(mx-v.tx)*s/v.scale;v.ty=my-(my-v.ty)*s/v.scale;v.scale=s;};
+ const legend:[string,string,"solid"|"dashed"|"swipe"][]=[["edge-explicit","Links you wrote","solid"],["edge-inferred","Found automatically","dashed"],["edge-usage","Used together","swipe"],["edge-concept","Shared topic","swipe"],["edge-switch","Switched between","swipe"]];
+ const visibleList=list.filter(visibleNode);
  return <div ref={wrapRef} className="graphwrap">
   <canvas ref={canvasRef} aria-label="Interactive knowledge graph" onPointerDown={e=>{
    if(e.button!==0)return;e.currentTarget.setPointerCapture(e.pointerId);const node=pick(e.clientX,e.clientY);
    drag.current={id:e.pointerId,node,edge:node?null:pickEdge(e.clientX,e.clientY),startX:e.clientX,startY:e.clientY,lastX:e.clientX,lastY:e.clientY,moved:false};
   }} onPointerMove={e=>{
    hover.current=pick(e.clientX,e.clientY)?.id??null;const d=drag.current;if(!d||d.id!==e.pointerId)return;
-   if(Math.hypot(e.clientX-d.startX,e.clientY-d.startY)>4)d.moved=true;
+   if(Math.hypot(e.clientX-d.startX,e.clientY-d.startY)>4){d.moved=true;touched.current=true;}
    if(d.moved){if(d.node){const p=world(e.clientX,e.clientY);d.node.x=d.node.fx=p.x;d.node.y=d.node.fy=p.y;settle.current=120;}else{view.current.tx+=e.clientX-d.lastX;view.current.ty+=e.clientY-d.lastY;}}
    d.lastX=e.clientX;d.lastY=e.clientY;
-  }} onPointerUp={release} onPointerCancel={()=>{drag.current=null;load().catch(()=>{});}} onWheel={e=>{
-   const r=e.currentTarget.getBoundingClientRect(),v=view.current,mx=e.clientX-r.left,my=e.clientY-r.top,s=Math.min(4,Math.max(0.1,v.scale*Math.exp(-e.deltaY*0.001)));
+  }} onPointerLeave={()=>{if(!drag.current)hover.current=null;}} onPointerUp={release} onPointerCancel={()=>{drag.current=null;load().catch(()=>{});}} onWheel={e=>{
+   touched.current=true;const r=e.currentTarget.getBoundingClientRect(),v=view.current,mx=e.clientX-r.left,my=e.clientY-r.top,s=Math.min(4,Math.max(0.1,v.scale*Math.exp(-e.deltaY*0.001)));
    v.tx=mx-(mx-v.tx)*s/v.scale;v.ty=my-(my-v.ty)*s/v.scale;v.scale=s;
   }} onDoubleClick={async e=>{const n=pick(e.clientX,e.clientY);if(!n)return;try{await api.setPosition(n.id,null,null);n.fx=n.fy=null;settle.current=180;}catch(err){props.current.onStatus(`Unpin failed: ${String(err)}`);}}}/>
-  <div className="graph-tools"><button onClick={fit}>Fit graph</button><details><summary>Graph filters & legend</summary><div className="browse">
-   <label><input type="checkbox" checked={showActivity} onChange={e=>setShowActivity(e.target.checked)}/>Show activity edges</label>
-   <label><input type="checkbox" checked={showBrowser} onChange={e=>setShowBrowser(e.target.checked)}/>Show browser nodes</label>
-   <label>Node scope <select aria-label="Graph node scope" value={scope} onChange={e=>setScope(e.target.value)}><option value="all">All nodes</option><option value="domains">Domains and notes</option><option value="pages">Pages and notes</option><option value="connected">Activity-connected notes</option></select></label>
-   <p>Blue solid: explicit wikilinks</p><p>Gray dashed: inferred note links</p><p>Green dashed: activity usage</p><p>Orange dashed: activity concepts</p><p>Purple dashed: context switches</p>
-  </div></details><details><summary>Browse graph ({list.filter(visibleNode).length})</summary><div className="browse">
-   {list.filter(visibleNode).map(n=><button key={n.id} onClick={()=>{selectNode(n.id);focus(n.id);}}>{n.title} {n.type!=="note"?`(${n.type})`:""}</button>)}
-   {edgeList.filter(visible).map(e=><button key={`edge-${e.id}`} onClick={()=>{onSelectEdge(e);}}>Inspect relationship: {list.find(n=>n.id===e.source_id)?.title} ↔ {list.find(n=>n.id===e.target_id)?.title} ({e.source} · {e.relationship_type})</button>)}
-  </div></details></div>
-  {(loading||error||!list.length)&&<div className="graph-message" role="status">{loading?"Loading graph…":error?<> {error} <button onClick={()=>{load().catch(()=>{});}}>Retry</button></>:"Create a note to start your graph."}</div>}
-  <style jsx>{`.graphwrap{flex:1;position:relative;min-width:0;min-height:260px;overflow:hidden;background:radial-gradient(circle at 30% 20%,rgba(59,91,219,.08),transparent 60%),var(--bg)}canvas{width:100%;height:100%;display:block;touch-action:none;cursor:grab}.graph-tools{position:absolute;left:12px;top:12px;display:flex;gap:8px;align-items:flex-start}details{background:var(--bg-panel);border:1px solid var(--border);border-radius:6px;padding:6px;max-width:300px}summary{cursor:pointer;font-size:12px}.browse{display:flex;flex-direction:column;gap:4px;max-height:250px;overflow:auto;margin-top:8px}.browse button{text-align:left;font-size:12px}.graph-message{position:absolute;left:20px;bottom:20px;background:var(--bg-panel);padding:12px;border-radius:8px;max-width:90%}`}</style>
+  <div className="graph-tools">
+   <div className="tool-group">
+    <button className="tool" onClick={fit}><Icon name="fit" size={16} /><span className="btn-label">Fit graph</span></button>
+    <button className="tool icon-only" aria-label="Zoom out" title="Zoom out" onClick={()=>zoomBy(1/1.25)}><Icon name="zoomOut" size={16} /></button>
+    <button className="tool icon-only" aria-label="Zoom in" title="Zoom in" onClick={()=>zoomBy(1.25)}><Icon name="zoomIn" size={16} /></button>
+   </div>
+   <details className="pop"><summary><span className="full">Graph filters & legend</span><span className="short" aria-hidden="true">Filters</span></summary><div className="browse filters">
+    <label className="check"><input type="checkbox" checked={showActivity} onChange={e=>setShowActivity(e.target.checked)}/>Show activity edges</label>
+    <label className="check"><input type="checkbox" checked={showBrowser} onChange={e=>setShowBrowser(e.target.checked)}/>Show browser nodes</label>
+    <label className="scope">Show <select aria-label="Graph node scope" value={scope} onChange={e=>setScope(e.target.value)}><option value="all">Everything</option><option value="domains">Websites and notes</option><option value="pages">Pages and notes</option><option value="connected">Notes connected to activity</option></select></label>
+    <h3>Lines</h3>
+    <ul className="edge-legend">{legend.map(([k,label,form])=><li key={k}><svg width="30" height="12" aria-hidden="true"><line x1="3" x2="27" y1="6" y2="6" stroke={`var(--${k})`} strokeWidth={form==="swipe"?7:2} strokeOpacity={form==="swipe"?.55:1} strokeLinecap="round" strokeDasharray={form==="dashed"?"4 4":undefined}/></svg>{label}</li>)}</ul>
+   </div></details>
+   <details className="pop"><summary><span className="full">Browse graph ({visibleList.length})</span><span className="short" aria-hidden="true">Browse ({visibleList.length})</span></summary><div className="browse">
+    {visibleList.map(n=><button key={n.id} className="item" onClick={()=>{selectNode(n.id);focus(n.id);}}><span className="dot" style={{background:dotFill(n)}} aria-hidden="true"/>{n.title} {n.type!=="note"?`(${n.type})`:""}</button>)}
+    {edgeList.filter(visible).map(e=><button key={`edge-${e.id}`} className="item edge-item" onClick={()=>{onSelectEdge(e);}}>Inspect relationship: {list.find(n=>n.id===e.source_id)?.title} and {list.find(n=>n.id===e.target_id)?.title} ({e.source} · {e.relationship_type})</button>)}
+   </div></details>
+  </div>
+  {(loading||error||!list.length)&&<div className="graph-message" role="status">{loading?<><span className="spinner" aria-hidden="true"/>Loading graph…</>:error?<> {error} <button onClick={()=>{load().catch(()=>{});}}>Retry</button></>:"Your graph is empty. Create a note to add the first dot."}</div>}
+  <style jsx>{`
+   .graphwrap{flex:1;position:relative;min-width:0;min-height:260px;overflow:hidden;background:var(--paper)}
+   canvas{width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+   .graph-tools{position:absolute;left:14px;top:14px;right:14px;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;pointer-events:none}
+   .graph-tools>*{pointer-events:auto}
+   .tool-group,.pop{background:var(--paper-raised);border:var(--stroke) solid var(--border);border-radius:var(--radius);box-shadow:var(--lift)}
+   .tool-group{display:flex;align-items:center;overflow:hidden}
+   .tool{border:0;border-radius:0;background:transparent;min-height:36px}
+   .tool+.tool{border-left:var(--stroke) solid var(--border)}
+   .tool:hover:not(:disabled){background:var(--paper-sunk)}
+   .pop{max-width:330px;min-width:0}
+   .pop summary{font-size:14px;font-weight:550;padding:8px 12px;min-height:36px}
+   .short{display:none}
+   .pop[open] summary{border-bottom:1px solid var(--hairline)}
+   .browse{display:flex;flex-direction:column;gap:2px;max-height:min(360px,55vh);overflow:auto;overscroll-behavior:contain;padding:6px}
+   .browse>*{flex:none}
+   .filters{gap:12px;padding:14px}
+   .check{display:flex;align-items:center;gap:10px;font-size:14px;cursor:pointer}
+   .scope{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--ink-2)}
+   .scope select{width:100%}
+   h3{font-size:14px;margin-top:4px}
+   .edge-legend{list-style:none;display:flex;flex-direction:column;gap:8px;font-size:14px}
+   .edge-legend li{display:flex;align-items:center;gap:10px}
+   .item{justify-content:flex-start;text-align:left;font-size:14px;font-weight:450;background:transparent;border:0;border-radius:var(--radius-sm);padding:7px 9px;white-space:normal;min-height:0;gap:9px}
+   .item:hover:not(:disabled){background:var(--paper-sunk)}
+   .edge-item{color:var(--ink-2);font-size:13px}
+   .graph-message{position:absolute;left:50%;bottom:24px;transform:translateX(-50%);display:flex;align-items:center;gap:10px;background:var(--paper-raised);border:var(--stroke) solid var(--border);box-shadow:var(--lift);padding:10px 16px;border-radius:var(--radius);max-width:90%;font-size:14px;color:var(--ink-2)}
+   .spinner{width:14px;height:14px;border-radius:50%;border:2px solid var(--hairline);border-top-color:var(--rule);animation:spin .8s linear infinite}
+   @keyframes spin{to{transform:rotate(360deg)}}
+   @media(max-width:760px){
+    .graph-tools{left:8px;top:8px;right:8px;gap:6px}
+    .tool .btn-label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+    .tool{padding:0 10px}
+    .pop{max-width:calc(100vw - 16px)}
+    .pop summary{font-size:14px;padding:6px 10px;min-height:36px}
+    .graph-tools{flex-wrap:nowrap}
+    .pop[open]{position:absolute;left:0;right:0;top:44px;max-width:none;z-index:2}
+    .full{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+    .short{display:inline}
+   }
+  `}</style>
  </div>;
 });

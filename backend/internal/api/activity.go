@@ -70,7 +70,16 @@ func (h *Handler) ActivityHandler(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "granularity must be day or week")
 			return
 		}
-		series, err := activity.GetSeries(h.DB, days, granularity, time.Now())
+		var until time.Duration
+		if raw := r.URL.Query().Get("until"); raw != "" {
+			secs, convErr := strconv.Atoi(raw)
+			if convErr != nil || secs < 0 || secs > 86400 {
+				writeErr(w, 400, "until must be seconds after midnight, 0 to 86400")
+				return
+			}
+			until = time.Duration(secs) * time.Second
+		}
+		series, err := activity.GetSeriesUntil(h.DB, days, granularity, time.Now(), until)
 		if err != nil {
 			fail(w, err)
 			return

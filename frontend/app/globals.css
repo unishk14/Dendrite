@@ -1,88 +1,289 @@
+/* Dendrite — highlighter day planner.
+   Gridded planner paper, ballpoint ink, one ballpoint-blue rule for "now" and
+   selection, and five highlighter inks for data. Active time is a solid double
+   pass, passive time a faint hatched single pass. The canvas reads these tokens. */
 :root {
-  --bg: #0b0e14;
-  --bg-panel: #11151f;
-  --bg-hover: #1a2030;
-  --border: #232a3a;
-  --text: #dde3ee;
-  --text-dim: #8b93a7;
-  --accent: #6ea8fe;
-  --accent-dim: #3b5bdb;
-  --edge: #2e3a52;
-  --edge-strong: #6ea8fe;
-  --danger: #ff6b6b;
-  --good: #51cf66;
+  color-scheme: light;
+
+  --paper: #f6f8f7;
+  --paper-raised: #fbfcfb;
+  --paper-sunk: #eef2f1;
+  --grid: #d3e0ea;
+  --grid-strong: #b9cbd8;
+  --ink: #1c2431;
+  --ink-2: #4f5a6a;
+  --ink-3: #6b7686;
+  --rule: #2f5bd3;
+  --rule-soft: rgba(47, 91, 211, 0.12);
+  --on-rule: #ffffff;
+  --border: var(--ink);
+  --hairline: #c9d6df;
+
+  --hl-yellow: #ffe24d;
+  --hl-pink: #ff8cc6;
+  --hl-green: #7feba0;
+  --hl-blue: #86ceff;
+  --hl-orange: #ffb66b;
+  --hl-grey: #c5cdd6;
+  --on-hl: #1c2431;
+
+  --danger: #c4282f;
+  --danger-soft: rgba(196, 40, 47, 0.09);
+  --warning-soft: rgba(255, 182, 107, 0.28);
+  --live: #d6383f;
+
+  /* Graph roles, mapped onto the same inks. */
+  --node-note: var(--hl-blue);
+  --node-app: var(--hl-pink);
+  --node-domain: var(--hl-green);
+  --node-page: var(--hl-yellow);
+  --node-window: var(--hl-orange);
+  --node-outline: var(--ink);
+  --node-selected: var(--rule);
+  --edge-explicit: var(--ink);
+  --edge-inferred: #7c8798;
+  --edge-usage: #3fcf74;
+  --edge-concept: #f2c200;
+  --edge-switch: #f06aac;
+  --canvas-label: var(--ink);
+  --canvas-halo: rgba(246, 248, 247, 0.94);
+  --canvas-grid: #dde7ee;
+
+  --stroke: 1.5px;
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --lift: 0 6px 20px -8px rgba(28, 36, 49, 0.28), 0 1px 3px rgba(28, 36, 49, 0.12);
+  --cell: 24px;
+
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+/* Night planner: ink-blue paper, chalk ink, highlighters that glow. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #111a2a;
+    --paper-raised: #162135;
+    --paper-sunk: #0d1522;
+    --grid: #1d2a40;
+    --grid-strong: #2a3a56;
+    --ink: #e7ecf4;
+    --ink-2: #b2bccb;
+    --ink-3: #8f9bae;
+    --rule: #7fa2ff;
+    --rule-soft: rgba(127, 162, 255, 0.16);
+    --on-rule: #0d1522;
+    --border: #3a4b68;
+    --hairline: #26344d;
+
+    --hl-yellow: #f5d63d;
+    --hl-pink: #f77bb9;
+    --hl-green: #63dd8c;
+    --hl-blue: #6fbef5;
+    --hl-orange: #f7a456;
+    --hl-grey: #8392a8;
+    --on-hl: #0f1522;
+
+    --danger: #ff7d84;
+    --danger-soft: rgba(255, 125, 132, 0.12);
+    --warning-soft: rgba(247, 164, 86, 0.18);
+    --live: #ff6b72;
+
+    --edge-explicit: #c9d3e2;
+    --edge-inferred: #6c7a92;
+    --canvas-label: #e7ecf4;
+    --canvas-halo: rgba(17, 26, 42, 0.94);
+    --canvas-grid: #1a2638;
+    --lift: 0 10px 28px -10px rgba(0, 0, 0, 0.7), 0 1px 3px rgba(0, 0, 0, 0.4);
+  }
 }
 
-html,
-body {
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
   height: 100%;
-  background: var(--bg);
-  color: var(--text);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 14px;
   overflow: hidden;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-numeric: tabular-nums;
+  caret-color: var(--rule);
 }
 
+::selection { background: var(--hl-yellow); color: var(--on-hl); }
+
+h1, h2, h3, h4 { font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; text-wrap: balance; }
+h2 { font-size: 19px; }
+h3 { font-size: 16px; }
+
+a { color: var(--rule); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+code, kbd, pre { font-family: var(--font-mono); }
+
+kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 22px; height: 22px; padding: 0 6px;
+  font-size: 12px; color: var(--ink-2);
+  border: 1px solid var(--grid-strong); border-radius: 5px;
+  background: var(--paper-raised);
+}
+
+/* Paper with the planner grid. Used by the app background and the canvas. */
+.grid-paper {
+  background-color: var(--paper);
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: var(--cell) var(--cell);
+  background-position: -1px -1px;
+}
+
+/* ── Controls ─────────────────────────────────────────────── */
 button {
   font: inherit;
-  color: inherit;
-  background: var(--bg-hover);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 5px 12px;
+  font-size: 14px;
+  font-weight: 550;
+  color: var(--ink);
+  background: var(--paper-raised);
+  border: var(--stroke) solid var(--border);
+  border-radius: var(--radius-sm);
+  min-height: 36px;
+  padding: 6px 13px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+  transition: background-color 0.16s var(--ease), color 0.16s var(--ease), border-color 0.16s var(--ease), transform 0.12s var(--ease);
 }
+button:hover:not(:disabled) { background: var(--paper-sunk); }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
 
-button:disabled { opacity: 0.5; cursor: not-allowed; }
-button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.error { color: var(--danger); font-size: 12px; line-height: 1.5; }
+button.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+button.primary:hover:not(:disabled) { background: var(--rule); border-color: var(--rule); color: var(--on-rule); }
 
-button:hover {
-  background: var(--border);
-  border-color: var(--accent-dim);
+button.quiet { background: transparent; border-color: transparent; color: var(--ink-2); }
+button.quiet:hover:not(:disabled) { background: var(--paper-sunk); color: var(--ink); }
+
+button.danger { color: var(--danger); border-color: currentColor; background: transparent; }
+button.danger:hover:not(:disabled) { background: var(--danger-soft); }
+
+button.icon-only { width: 36px; padding: 0; }
+
+button[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
+:focus-visible { outline: 2.5px solid var(--rule); outline-offset: 2px; border-radius: 4px; }
+
+/* Segmented control, drawn as a ruled strip. */
+.segmented {
+  display: inline-flex;
+  border: var(--stroke) solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--paper-raised);
 }
-
-button.primary {
-  background: var(--accent-dim);
-  border-color: var(--accent-dim);
-  color: #fff;
+.segmented button {
+  border: 0; border-radius: 0; min-height: 34px; background: transparent; color: var(--ink-2);
 }
+.segmented button + button { border-left: var(--stroke) solid var(--border); }
+.segmented button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
 
-button.primary:hover {
-  background: var(--accent);
-}
-
-input,
-textarea {
+input, textarea, select {
   font: inherit;
-  color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
+  font-size: 15px;
+  color: var(--ink);
+  background: var(--paper-raised);
+  border: var(--stroke) solid var(--border);
+  border-radius: var(--radius-sm);
+  min-height: 36px;
+  padding: 6px 11px;
   outline: none;
+  transition: box-shadow 0.16s var(--ease), border-color 0.16s var(--ease);
+}
+input::placeholder, textarea::placeholder { color: var(--ink-3); }
+input:focus, textarea:focus, select:focus { border-color: var(--rule); box-shadow: 0 0 0 3px var(--rule-soft); }
+
+select {
+  appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none'%3E%3Cpath stroke='%236b7686' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round' d='m1 1.5 5 5 5-5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 11px center;
 }
 
-input:focus,
-textarea:focus {
-  border-color: var(--accent);
+input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none;
+  width: 18px; height: 18px; min-height: 0; padding: 0; flex: none;
+  border: var(--stroke) solid var(--border); border-radius: 4px;
+  background: var(--paper-raised);
+  display: inline-grid; place-content: center; cursor: pointer;
+}
+input[type="checkbox"]::after {
+  content: ""; width: 9px; height: 5px;
+  border: 2px solid var(--paper); border-top: 0; border-right: 0;
+  transform: rotate(-45deg) translate(1px, -1px) scale(0);
+  transition: transform 0.14s var(--ease);
+}
+input[type="checkbox"]:checked { background: var(--ink); }
+input[type="checkbox"]:checked::after { transform: rotate(-45deg) translate(1px, -1px) scale(1); }
+
+input[type="file"] { padding: 5px; font-size: 13px; }
+input[type="file"]::file-selector-button {
+  font: inherit; font-weight: 550; color: var(--ink);
+  border: var(--stroke) solid var(--border); border-radius: 5px; background: var(--paper);
+  padding: 3px 10px; margin-right: 10px; cursor: pointer;
 }
 
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+fieldset:disabled { opacity: 0.6; }
+
+summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; user-select: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before {
+  content: ""; width: 7px; height: 7px; flex: none;
+  border-right: 2px solid currentColor; border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg); transition: transform 0.16s var(--ease);
 }
-::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 4px;
+details[open] > summary::before { transform: rotate(45deg); }
+
+/* ── Shared vocabulary ──────────────────────────────────── */
+.error { color: var(--danger); font-size: 14px; line-height: 1.5; }
+.muted { color: var(--ink-2); }
+
+/* A highlighter swatch; .passive renders the hatched single pass. */
+.ink-swatch {
+  display: inline-block; width: 30px; height: 12px; border-radius: 3px; flex: none;
+  background: var(--swatch, var(--hl-yellow));
 }
-::-webkit-scrollbar-track {
-  background: transparent;
+.ink-swatch.passive {
+  background: repeating-linear-gradient(135deg, var(--swatch, var(--hl-yellow)) 0 3px, transparent 3px 7px);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--swatch, var(--hl-yellow)) 70%, var(--ink));
 }
+
+/* The highlighter itself. Set --pen on the element.
+   .pass2 = active time: two overlapping translucent passes, darker where they cross.
+   .hatch = passive time: one faint diagonal pass. Shape carries state, never colour alone. */
+.pass2 { position: relative; background: color-mix(in srgb, var(--pen) 72%, transparent); }
+.pass2::after {
+  content: ""; position: absolute; left: 3px; right: 0; top: 38%; bottom: 0;
+  background: color-mix(in srgb, var(--pen) 72%, transparent); border-radius: inherit; pointer-events: none;
+}
+.hatch {
+  background: repeating-linear-gradient(135deg, var(--pen) 0 3px, transparent 3px 7px);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pen) 65%, var(--ink));
+}
+
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex: none; border: 1.5px solid var(--ink); }
+
+@keyframes stroke-in { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* ── Scrollbars ─────────────────────────────────────────── */
+* { scrollbar-width: thin; scrollbar-color: var(--grid-strong) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--grid-strong); border-radius: 10px; border: 3px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }

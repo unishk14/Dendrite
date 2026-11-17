@@ -4,6 +4,9 @@ data/
 *.db-wal
 *.db-shm
 
+# Personal Markdown vault (created automatically on first run)
+notes/
+
 # Logs
 *.log
 nohup.out
@@ -12,6 +15,7 @@ nohup.out
 frontend/node_modules/
 frontend/.next/
 frontend/out/
+*.tsbuildinfo
 frontend/test-results/
 frontend/playwright-report/
 browser-extension/dist-firefox/
@@ -30,3 +34,12 @@ Thumbs.db
 # Env
 .env
 .env.local
+.impeccable
+.freebuff
+
+# Private planning files
+PLAN.md
+PRODUCT.md
+DESIGN.md
+IMPLEMENTATION_PLAN.md
+V1_STATUS.md

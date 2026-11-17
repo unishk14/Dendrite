@@ -124,8 +124,18 @@ func bounds(length, offset, limit int) (int, int) {
 	}
 	return offset, end
 }
+
+// RecentLimit is the page size cap for raw sessions. It is larger than the
+// website-list cap because a single day can hold several hundred sessions and
+// the Today view draws every one of them.
+const RecentLimit = 1000
+
 func GetRecent(db *sql.DB, q Query) (RecentResult, error) {
+	requested := q.Limit
 	q = q.Bounded()
+	if requested > q.Limit {
+		q.Limit = min(requested, RecentLimit)
+	}
 	sessions, err := querySessions(db, q)
 	if err != nil {
 		return RecentResult{}, err

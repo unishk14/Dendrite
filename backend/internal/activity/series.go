@@ -50,6 +50,13 @@ type bucketWork struct {
 // by the recorded session ratio. The range contains days calendar dates,
 // including the current partial day (or week).
 func GetSeries(db *sql.DB, days int, granularity string, now time.Time) (Series, error) {
+	return GetSeriesUntil(db, days, granularity, now, 0)
+}
+
+// GetSeriesUntil is GetSeries with every bucket clipped to the first `until`
+// of its period (for days: the same time of day), so a partial today can be
+// compared with earlier days up to the same clock time. Zero means no clip.
+func GetSeriesUntil(db *sql.DB, days int, granularity string, now time.Time, until time.Duration) (Series, error) {
 	if days < 1 {
 		days = 1
 	}
@@ -146,6 +153,16 @@ func GetSeries(db *sql.DB, days int, granularity string, now time.Time) (Series,
 			segmentEnd := end
 			if starts[index+1].Before(segmentEnd) {
 				segmentEnd = starts[index+1]
+			}
+			if until > 0 {
+				limit := starts[index].Add(until)
+				if !cursor.Before(limit) {
+					cursor = starts[index+1]
+					continue
+				}
+				if limit.Before(segmentEnd) {
+					segmentEnd = limit
+				}
 			}
 			seconds := segmentEnd.Sub(cursor).Seconds()
 			activeRatio := math.Max(0, math.Min(1, session.ActiveSeconds/session.TotalSeconds))

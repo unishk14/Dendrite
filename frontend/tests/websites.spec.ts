@@ -8,9 +8,9 @@ test("website explorer, mute/restore, explanations, graph filters and privacy cl
  await page.goto("/");
  const note=await (await page.request.post("/api/notes",{data:{title:"Go resources",content:"# Go resources\n\n#golang"}})).json();
  const dashboard=page.getByRole("region",{name:"Activity dashboard"});
- // The topbar button toggles, so drive the panel by observed state instead.
- const openActivity=async()=>{ if(!await dashboard.isVisible()) await page.getByRole("button",{name:/^Activity [●○]$/}).click(); await expect(dashboard).toBeVisible(); };
- const closeActivity=async()=>{ if(await dashboard.isVisible()) await page.getByRole("button",{name:"Close activity"}).click(); };
+ // Trends and Notes are tabs, so switching to Notes is how the dashboard closes.
+ const openActivity=async()=>{ if(!await dashboard.isVisible()) await page.getByRole("tab",{name:"Trends"}).click(); await expect(dashboard).toBeVisible(); };
+ const closeActivity=async()=>{ await page.getByRole("tab",{name:"Notes"}).click(); };
  const edges=async()=>((await (await page.request.get("/api/graph")).json()).edges as {source:string}[]).filter(e=>e.source==="activity").length;
  const detail=async(id:number)=>await (await page.request.get(`/api/activity/nodes/${id}`)).json();
 
@@ -31,7 +31,7 @@ test("website explorer, mute/restore, explanations, graph filters and privacy cl
  const baseline=await edges();
  expect((await detail(pageId)).muted_connections).toBe(0);
  await page.getByRole("button",{name:"Explain connections",exact:true}).click();
- await expect(page.getByRole("region",{name:"Website connection explanations"})).toContainText("Shared note concept: golang");
+ await expect(page.getByRole("region",{name:"Website connection explanations"})).toContainText("Matches a topic in your notes: golang");
 
  // Muting one connection hides it everywhere without touching usage or notes.
  await page.getByRole("button",{name:"Mute this connection",exact:true}).first().click();

@@ -9,7 +9,7 @@ Everything runs locally:
 - **Backend:** Go API, SQLite persistence, file synchronization, and optional
   macOS activity collection
 - **Frontend:** Next.js and React graph interface
-- **Vault:** Markdown files in [`notes/`](notes/)
+- **Vault:** Markdown files in `notes/` (created on first run)
 - **Derived data:** Local SQLite database in `data/`
 
 The application binds to loopback addresses by default and is intended for
@@ -287,5 +287,8 @@ Privacy review checklist:
 - Keep the local database, pairing token, backups, and logs private.
 
 The current end-to-end suite covers note, graph, search, conflict, history,
-activity, and privacy workflows. See [`V1_STATUS.md`](V1_STATUS.md) for the
-implementation status and verification history.
+activity, and privacy workflows.
+
+## License
+
+Released under the [MIT License](LICENSE).
